@@ -90,12 +90,19 @@ async function tryInjectIntoSteamTabs() {
     const tabs = await chrome.tabs.query({ url: 'https://steamcommunity.com/*' });
     for (const tab of tabs) {
       try {
+        // 1. Injecte d'abord le script MAIN world (lit window.g_sessionID etc.)
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/steam-bridge-main.js'],
+          world: 'MAIN',
+        });
+        // 2. Injecte ensuite le script ISOLATED world (a accès à chrome.storage)
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['content/steam-bridge.js'],
         });
-        // Laisse le temps au script de s'exécuter et d'écrire dans storage.session
-        await sleep(300);
+        // Laisse le temps aux CustomEvents de se propager et à storage.session d'être écrit
+        await sleep(400);
         const session = await getSession();
         if (session.sessionid) return session;
       } catch (_) { /* onglet inaccessible */ }

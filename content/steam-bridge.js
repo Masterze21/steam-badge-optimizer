@@ -1,42 +1,43 @@
-// Injecté sur steamcommunity.com — accède à window.g_sessionID (HTTP-only cookie inaccessible côté extension)
+// Tourne dans le monde ISOLATED — accès aux APIs chrome (storage, runtime)
+// Reçoit les données Steam depuis steam-bridge-main.js via CustomEvent
 
 (function () {
-  const sessionid = window.g_sessionID;
-  const steamid = window.g_steamID;
-  const vanity = window.g_strProfileURL ? window.g_strProfileURL.replace(/.*\/(id|profiles)\/([^/]+)\/?$/, '$2') : null;
-  const profileType = window.g_strProfileURL && window.g_strProfileURL.includes('/id/') ? 'id' : 'profiles';
+  document.documentElement.setAttribute('data-steam-bridge', '1');
 
-  if (sessionid) {
-    // Écriture directe dans chrome.storage.session — fonctionne même si le service worker
-    // n'est pas actif (évite la perte de session en MV3 quand le SW est tué).
-    chrome.storage.session.set({ sessionid, steamid, vanity, profileType });
-    // On notifie quand même le SW s'il est actif (ex: pour des actions immédiates).
-    chrome.runtime.sendMessage({ type: 'STEAM_SESSION', sessionid, steamid, vanity, profileType })
-      .catch(() => { /* SW endormi — pas grave, storage.session est déjà écrit */ });
+  function handleSession({ sessionid, steamid, profileURL }) {
+    if (!sessionid && !steamid) return;
+
+    const vanity = profileURL
+      ? profileURL.replace(/.*\/(id|profiles)\/([^/]+)\/?$/, '$2')
+      : null;
+    const profileType = profileURL && profileURL.includes('/id/') ? 'id' : 'profiles';
+
+    console.log('[SteamBridge] Session reçue — steamid:', steamid, '| vanity:', vanity);
+
+    if (sessionid) {
+      chrome.storage.session.set({ sessionid, steamid, vanity, profileType }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('[SteamBridge] storage.set error:', chrome.runtime.lastError.message);
+        } else {
+          console.log('[SteamBridge] Session stockée OK');
+        }
+      });
+      chrome.runtime.sendMessage({ type: 'STEAM_SESSION', sessionid, steamid, vanity, profileType })
+        .catch(() => {});
+    }
   }
 
-  // Capture billing info quand l'user fait un buy manuel
-  const origFetch = window.fetch;
-  window.fetch = async function (...args) {
-    const [input, init] = args;
-    const url = typeof input === 'string' ? input : input.url;
-    if (url && url.includes('/market/createbuyorder/') && init && init.body) {
-      try {
-        const body = init.body instanceof FormData
-          ? Object.fromEntries(init.body.entries())
-          : Object.fromEntries(new URLSearchParams(init.body).entries());
-        const billingFields = ['billing_address', 'billing_city', 'billing_country',
-          'billing_po', 'billing_state', 'first_name', 'last_name', 'tradefee_tax'];
-        const billing = {};
-        let hasData = false;
-        for (const f of billingFields) {
-          if (body[f] !== undefined) { billing[f] = body[f]; hasData = true; }
-        }
-        if (hasData) {
-          chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing });
-        }
-      } catch (_) {}
-    }
-    return origFetch.apply(this, args);
-  };
+  // Écoute l'événement envoyé par le MAIN world
+  document.addEventListener('__sbo_session', e => handleSession(e.detail));
+
+  // Envoie un ping pour déclencher un re-dispatch depuis le MAIN world
+  // (cas où l'événement initial a été émis avant que ce listener soit prêt)
+  document.dispatchEvent(new CustomEvent('__sbo_ping'));
+
+  // ── Réception billing depuis le MAIN world ───────────────────────────────────
+  document.addEventListener('__sbo_billing', e => {
+    const billing = e.detail;
+    chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing }).catch(() => {});
+  });
+
 })();
