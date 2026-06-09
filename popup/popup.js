@@ -292,6 +292,8 @@ async function loadSettings() {
   }
   if (s.includeFoils)       $('toggle-foils').checked = true;
   if (s.multiLevel !== false) $('toggle-multilevel').checked = true;
+  $('toggle-gemsmart').checked = s.gemSmart !== false;
+  $('input-gemmax').value = s.gemMaxValueCents != null ? s.gemMaxValueCents : 8;
   if (s.maxCostPerBadge)    $('input-maxcost').value = s.maxCostPerBadge;
   if (s.delayMs)   { $('range-delay').value = s.delayMs;   $('delay-val').textContent   = Number(s.delayMs).toLocaleString('fr') + ' ms'; }
   if (s.maxLevel)  { $('range-maxlevel').value = s.maxLevel; $('maxlevel-val').textContent = s.maxLevel; }
@@ -304,6 +306,8 @@ async function saveSettings() {
     strategy,
     includeFoils:    $('toggle-foils').checked,
     multiLevel:      $('toggle-multilevel').checked,
+    gemSmart:        $('toggle-gemsmart').checked,
+    gemMaxValueCents: parseInt($('input-gemmax').value) || 8,
     maxCostPerBadge: parseFloat($('input-maxcost').value) || 0,
     delayMs:         parseInt($('range-delay').value),
     maxLevel:        parseInt($('range-maxlevel').value),

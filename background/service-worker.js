@@ -1,5 +1,5 @@
 import { getSession, setSession, getBilling, setBilling, getPlan, setPlan, getQueue, setQueue, getSettings, getPriceCache, setPriceCache } from '../lib/storage.js';
-import { fetchInventory, fetchBadgePage, fetchPricesForGame, sellItem, createBuyOrder, craftBadge, getGooValue, grindIntoGoo, sleep } from '../lib/steam-api.js';
+import { fetchInventory, fetchBadgePage, fetchPricesForGame, sellItem, createBuyOrder, craftBadge, getGooValue, grindIntoGoo, fetchWallet, sleep } from '../lib/steam-api.js';
 import { parseInventory, getGrindableItems } from '../lib/inventory.js';
 import { parseBadgePage } from '../lib/badges.js';
 import { buildPriceMap, sellerReceivesForBuyerPays } from '../lib/pricing.js';
@@ -235,7 +235,7 @@ async function handleAnalyze() {
     await waitIfPaused();
     const appid = staleAppids[i];
     try {
-      const results = await fetchPricesForGame(appid, settings.delayMs || 1000);
+      const results = await fetchPricesForGame(appid, 500);
       priceMap = buildPriceMap(priceMap, results);
     } catch (_) {}
     progress.done = i + 1;
@@ -243,29 +243,28 @@ async function handleAnalyze() {
   }
   await setPriceCache(priceMap);
 
+  // 3b. Solde réel du portefeuille Steam
+  let walletCents = 0;
+  try {
+    const w = await fetchWallet(session.steamid);
+    if (w && w.wallet_balance != null) walletCents = parseInt(w.wallet_balance, 10) || 0;
+  } catch (_) {}
+
   // 4. Optimization
-  progress.lastAction = 'Calcul du plan...';
+  progress.lastAction = 'Calcul du plan…';
   const candidates = [];
   for (const [appid, v] of Object.entries(badgesData)) {
     for (const [kind, bd] of [['normal', v.normal], ['foil', v.foil]]) {
       if (!bd) continue;
       const isFoil = kind === 'foil';
-      // Multi-niveau : génère un candidat par niveau craftable
-      const multiLevel = settings.multiLevel !== false;
-      if (multiLevel) {
-        const levels = analyzeBadgeAllLevels(appid, bd, isFoil, priceMap, settings);
-        candidates.push(...levels);
-      } else {
-        // Import statique utilisé via analyzeBadgeAllLevels en mode offset=0 seulement
-        const res = analyzeBadgeAllLevels(appid, bd, isFoil, priceMap, { ...settings, maxLevel: (badgesData[appid]?.level || 0) + 1 });
-        candidates.push(...res);
-      }
+      // analyzeBadgeAllLevels gère multi-niveau + maxLevel en interne
+      candidates.push(...analyzeBadgeAllLevels(appid, bd, isFoil, priceMap, settings));
     }
   }
 
-  const walletCents = 0; // TODO: parse wallet depuis la page marché
   const plan = optimize(candidates, walletCents, settings.strategy || 'maxROI');
-  plan.inv = inv; // Garder pour expand queues
+  plan.inv = inv;          // gardé pour les queues d'exécution
+  plan.walletCents = walletCents;
   plan.analyzedAt = Date.now();
 
   await setPlan(plan);
@@ -490,44 +489,78 @@ async function runGems() {
   if (!session.sessionid) throw new Error('Session Steam manquante.');
   const settings = await getSettings();
 
+  const smart        = settings.gemSmart !== false;       // grind intelligent (défaut ON)
+  const maxValueCents = settings.gemMaxValueCents || 8;    // au-dessus → mieux vaut revendre
+
   running = true;
   paused = false;
   currentPhase = 'gems';
-  progress = { done: 0, total: 0, lastAction: 'Récupération inventaire pour gems...' };
+  progress = { done: 0, total: 0, lastAction: 'Récupération de l\'inventaire…' };
 
-  // Récupérer inventaire frais
   const rawInv = await fetchInventory(session.steamid);
   const inv = parseInventory(rawInv);
   const grindable = getGrindableItems(inv);
 
-  progress.total = grindable.length;
-  progress.lastAction = `${grindable.length} items grindables trouvés`;
+  // ── Grind intelligent : on charge les prix des jeux concernés (cache 6h) ─────
+  let priceMap = await getPriceCache();
+  if (smart) {
+    const PRICE_TTL = 6 * 3600 * 1000;
+    const now = Date.now();
+    const appids = [...new Set(grindable.map(g => g.appid))];
+    const stale = appids.filter(a => {
+      const sample = grindable.find(g => g.appid === a);
+      return !sample || !priceMap[sample.mhn] || (now - (priceMap[sample.mhn].ts || 0) > PRICE_TTL);
+    });
+    progress.total = stale.length;
+    for (let i = 0; i < stale.length; i++) {
+      if (!running) break;
+      await waitIfPaused();
+      try {
+        const results = await fetchPricesForGame(stale[i], 500);
+        priceMap = buildPriceMap(priceMap, results);
+      } catch (_) {}
+      progress.done = i + 1;
+      progress.lastAction = `Prix ${i + 1}/${stale.length}`;
+    }
+    await setPriceCache(priceMap);
+  }
+
+  // ── Décision : broyer ou épargner ────────────────────────────────────────────
+  const toGrind = [];
+  const spared = [];
+  for (const item of grindable) {
+    if (smart && item.marketable) {
+      const p = priceMap[item.mhn];
+      const sellNet = p ? (p.instant_sell_net || 0) : 0;
+      if (sellNet > maxValueCents) { spared.push({ ...item, sellNet }); continue; }
+    }
+    toGrind.push(item);
+  }
+
+  progress.done = 0;
+  progress.total = toGrind.length;
+  progress.lastAction = `${toGrind.length} à broyer · ${spared.length} épargnés (revente plus rentable)`;
 
   let totalGems = 0;
-
-  for (let i = 0; i < grindable.length; i++) {
+  for (let i = 0; i < toGrind.length; i++) {
     if (!running) break;
     await waitIfPaused();
 
-    const item = grindable[i];
+    const item = toGrind[i];
     progress.done = i;
-    progress.lastAction = `Grind: ${item.name}`;
+    progress.lastAction = `Broyage : ${item.name}`;
 
     try {
-      // 1. Obtenir la valeur
       const gooInfo = await getGooValue({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid });
       if (!gooInfo.goo_value) continue;
-
       await sleep(300);
-
-      // 2. Grinder
       const res = await grindIntoGoo({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid, gooValueExpected: gooInfo.goo_value });
       if (res.success === 1) {
         totalGems += parseInt(res.goo_value_received || '0');
-        progress.lastAction = `Grindé: ${item.name} → ${res.goo_value_received} gems`;
+        progress.lastAction = `Broyé : ${item.name} → ${res.goo_value_received} gemmes`;
       }
     } catch (e) {
-      progress.lastAction = `Erreur: ${item.name} — ${e.message}`;
+      progress.lastAction = `Erreur : ${item.name} — ${e.message}`;
     }
 
     await sleep(settings.delayMs || 1000);
@@ -536,11 +569,12 @@ async function runGems() {
   running = false;
   currentPhase = null;
 
+  const sparedMsg = spared.length ? ` ${spared.length} objets épargnés (à revendre).` : '';
   chrome.notifications.create('gems_done', {
     type: 'basic', iconUrl: '../icons/icon48.png',
-    title: 'Gems terminé',
-    message: `${totalGems} gems obtenus depuis ${grindable.length} items.`,
+    title: 'Conversion en gemmes terminée',
+    message: `${totalGems} gemmes obtenues depuis ${toGrind.length} objets.${sparedMsg}`,
   });
 
-  return { ok: true, totalGems, count: grindable.length };
+  return { ok: true, totalGems, count: toGrind.length, spared: spared.length };
 }
