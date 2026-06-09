@@ -73,16 +73,53 @@ async function waitIfPaused() {
 }
 
 async function getStatus() {
-  let session = await getSession();
-
-  // Si pas de session : tente de la récupérer depuis les onglets Steam déjà ouverts
-  if (!session.sessionid) {
-    session = await tryInjectIntoSteamTabs() || session;
-  }
-
+  const session = await resolveSession();
   const billing = await getBilling();
   const plan = await getPlan();
   return { running, paused, currentPhase, progress, hasSession: !!session.sessionid, hasBilling: !!billing, plan };
+}
+
+// ── Résolution de session (multi-sources, ordre de fiabilité) ──────────────────
+
+// Source #1 (la plus fiable) : lecture directe des cookies Steam.
+// chrome.cookies peut lire le sessionid ET le cookie HttpOnly steamLoginSecure
+// (qui contient le steamid). Aucune dépendance au content script ni à un onglet ouvert.
+async function getSessionFromCookies() {
+  try {
+    const sc = await chrome.cookies.get({ url: 'https://steamcommunity.com', name: 'sessionid' });
+    if (!sc || !sc.value) return null;
+
+    let steamid = '';
+    const lc = await chrome.cookies.get({ url: 'https://steamcommunity.com', name: 'steamLoginSecure' });
+    if (lc && lc.value) {
+      // Format : {steamid64}||{token}  →  steamid = 17 premiers chiffres
+      const decoded = decodeURIComponent(lc.value);
+      const m = decoded.match(/^(\d{17})/);
+      if (m) steamid = m[1];
+    }
+    return { sessionid: sc.value, steamid };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function resolveSession() {
+  // 1. Cookies (fiable, immédiat)
+  const fromCookies = await getSessionFromCookies();
+  if (fromCookies && fromCookies.sessionid && fromCookies.steamid) {
+    const stored = await getSession();
+    const merged = { ...stored, ...fromCookies }; // conserve vanity/profileType si déjà connus
+    await setSession(merged);
+    return merged;
+  }
+
+  // 2. Session stockée par le content script
+  const stored = await getSession();
+  if (stored && stored.sessionid && stored.steamid) return stored;
+
+  // 3. Dernier recours : injecter le content script dans un onglet Steam ouvert
+  const injected = await tryInjectIntoSteamTabs();
+  return injected || stored || {};
 }
 
 // Injecte le content script dans les onglets steamcommunity.com déjà ouverts
@@ -124,7 +161,7 @@ async function tryInjectIntoSteamTabs() {
 // ── ANALYSE ───────────────────────────────────────────────────────────────────
 
 async function handleAnalyze() {
-  const session = await getSession();
+  const session = await resolveSession();
   if (!session.steamid) throw new Error('Pas de session Steam détectée. Ouvre steamcommunity.com d\'abord.');
 
   const settings = await getSettings();
@@ -225,7 +262,7 @@ async function handleAnalyze() {
 // ── PHASE 1 : Vendre ──────────────────────────────────────────────────────────
 
 async function runPhase1() {
-  const session = await getSession();
+  const session = await resolveSession();
   if (!session.sessionid) throw new Error('Session Steam manquante.');
   const plan = await getPlan();
   if (!plan) throw new Error('Lance d\'abord l\'analyse.');
@@ -243,7 +280,6 @@ async function runPhase1() {
   currentPhase = 'phase1';
   progress = { done: 0, total: queue.length, lastAction: 'Démarrage Phase 1...' };
 
-  const username = session.vanity || session.steamid;
   const errors = [];
   let startIdx = queue.findIndex(i => !i.done);
 
@@ -262,7 +298,7 @@ async function runPhase1() {
         item.skipped = true;
         continue;
       }
-      const res = await sellItem({ sessionid: session.sessionid, assetid: item.assetid, priceNet, username });
+      const res = await sellItem({ sessionid: session.sessionid, steamid: session.steamid, assetid: item.assetid, priceNet });
       if (res.success) {
         item.done = true;
         progress.lastAction = `Listé: ${item.mhn} à ${(priceNet / 100).toFixed(2)}€ — confirmation requise`;
@@ -307,7 +343,7 @@ async function runPhase1() {
 // ── PHASE 2 : Acheter + Crafter ───────────────────────────────────────────────
 
 async function runPhase2() {
-  const session = await getSession();
+  const session = await resolveSession();
   if (!session.sessionid) throw new Error('Session Steam manquante.');
   const billing = await getBilling();
   if (!billing) throw new Error('Infos de facturation manquantes. Fais un achat manuel sur le marché Steam d\'abord.');
@@ -421,7 +457,7 @@ async function runPhase2() {
 // ── GEMS : Grinder les récompenses ────────────────────────────────────────────
 
 async function runGems() {
-  const session = await getSession();
+  const session = await resolveSession();
   if (!session.sessionid) throw new Error('Session Steam manquante.');
   const settings = await getSettings();
 
@@ -438,7 +474,6 @@ async function runGems() {
   progress.total = grindable.length;
   progress.lastAction = `${grindable.length} items grindables trouvés`;
 
-  const username = session.vanity || session.steamid;
   let totalGems = 0;
 
   for (let i = 0; i < grindable.length; i++) {
@@ -451,13 +486,13 @@ async function runGems() {
 
     try {
       // 1. Obtenir la valeur
-      const gooInfo = await getGooValue({ sessionid: session.sessionid, username, sourceAppid: item.sourceAppid, assetid: item.assetid });
+      const gooInfo = await getGooValue({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid });
       if (!gooInfo.goo_value) continue;
 
       await sleep(300);
 
       // 2. Grinder
-      const res = await grindIntoGoo({ sessionid: session.sessionid, username, sourceAppid: item.sourceAppid, assetid: item.assetid, gooValueExpected: gooInfo.goo_value });
+      const res = await grindIntoGoo({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid, gooValueExpected: gooInfo.goo_value });
       if (res.success === 1) {
         totalGems += parseInt(res.goo_value_received || '0');
         progress.lastAction = `Grindé: ${item.name} → ${res.goo_value_received} gems`;
