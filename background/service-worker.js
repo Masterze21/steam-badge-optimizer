@@ -62,6 +62,8 @@ let running = false;
 let paused = false;
 let currentPhase = null;
 let progress = { done: 0, total: 0, lastAction: '' };
+let injectionInProgress = false;   // évite les injections parallèles
+let lastInjectionAttempt = 0;      // throttle : 1 tentative / 10s max
 
 function pauseAll() { paused = true; }
 function stopAll() { paused = false; running = false; }
@@ -86,28 +88,36 @@ async function getStatus() {
 // Injecte le content script dans les onglets steamcommunity.com déjà ouverts
 // pour récupérer la session si elle n'a pas encore été capturée.
 async function tryInjectIntoSteamTabs() {
+  // Throttle : pas plus d'une tentative toutes les 10 secondes
+  const now = Date.now();
+  if (injectionInProgress || now - lastInjectionAttempt < 10_000) return null;
+  injectionInProgress = true;
+  lastInjectionAttempt = now;
+
   try {
     const tabs = await chrome.tabs.query({ url: 'https://steamcommunity.com/*' });
     for (const tab of tabs) {
       try {
-        // 1. Injecte d'abord le script MAIN world (lit window.g_sessionID etc.)
+        // 1. MAIN world — lit window.g_sessionID (invisible depuis l'isolated world)
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['content/steam-bridge-main.js'],
           world: 'MAIN',
         });
-        // 2. Injecte ensuite le script ISOLATED world (a accès à chrome.storage)
+        // 2. ISOLATED world — accès chrome.storage, répond au ping du MAIN world
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['content/steam-bridge.js'],
         });
-        // Laisse le temps aux CustomEvents de se propager et à storage.session d'être écrit
+        // Laisse le temps aux CustomEvents de se propager
         await sleep(400);
         const session = await getSession();
         if (session.sessionid) return session;
-      } catch (_) { /* onglet inaccessible */ }
+      } catch (_) { /* onglet inaccessible (ex: chrome://, about:blank) */ }
     }
   } catch (_) {}
+
+  injectionInProgress = false;
   return null;
 }
 

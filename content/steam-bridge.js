@@ -1,8 +1,11 @@
 // Tourne dans le monde ISOLATED — accès aux APIs chrome (storage, runtime)
 // Reçoit les données Steam depuis steam-bridge-main.js via CustomEvent
 
+// Guard contre les injections multiples
+if (document.documentElement.getAttribute('data-steam-bridge') === '2') return;
+document.documentElement.setAttribute('data-steam-bridge', '2');
+
 (function () {
-  document.documentElement.setAttribute('data-steam-bridge', '1');
 
   function handleSession({ sessionid, steamid, profileURL }) {
     if (!sessionid && !steamid) return;

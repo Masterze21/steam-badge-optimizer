@@ -1,6 +1,10 @@
 // Tourne dans le MAIN world — accès aux variables JavaScript de la page Steam
 // (window.g_sessionID, g_steamID, etc. sont invisibles depuis le monde ISOLATED)
 
+// Guard contre les injections multiples (tryInjectIntoSteamTabs peut être appelé plusieurs fois)
+if (window.__sbo_main_loaded) return;
+window.__sbo_main_loaded = true;
+
 (function () {
 
   // ── Session Steam ────────────────────────────────────────────────────────────
