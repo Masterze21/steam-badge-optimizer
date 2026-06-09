@@ -7,7 +7,12 @@
   const profileType = window.g_strProfileURL && window.g_strProfileURL.includes('/id/') ? 'id' : 'profiles';
 
   if (sessionid) {
-    chrome.runtime.sendMessage({ type: 'STEAM_SESSION', sessionid, steamid, vanity, profileType });
+    // Écriture directe dans chrome.storage.session — fonctionne même si le service worker
+    // n'est pas actif (évite la perte de session en MV3 quand le SW est tué).
+    chrome.storage.session.set({ sessionid, steamid, vanity, profileType });
+    // On notifie quand même le SW s'il est actif (ex: pour des actions immédiates).
+    chrome.runtime.sendMessage({ type: 'STEAM_SESSION', sessionid, steamid, vanity, profileType })
+      .catch(() => { /* SW endormi — pas grave, storage.session est déjà écrit */ });
   }
 
   // Capture billing info quand l'user fait un buy manuel

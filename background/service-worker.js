@@ -71,10 +71,37 @@ async function waitIfPaused() {
 }
 
 async function getStatus() {
-  const session = await getSession();
+  let session = await getSession();
+
+  // Si pas de session : tente de la récupérer depuis les onglets Steam déjà ouverts
+  if (!session.sessionid) {
+    session = await tryInjectIntoSteamTabs() || session;
+  }
+
   const billing = await getBilling();
   const plan = await getPlan();
   return { running, paused, currentPhase, progress, hasSession: !!session.sessionid, hasBilling: !!billing, plan };
+}
+
+// Injecte le content script dans les onglets steamcommunity.com déjà ouverts
+// pour récupérer la session si elle n'a pas encore été capturée.
+async function tryInjectIntoSteamTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://steamcommunity.com/*' });
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/steam-bridge.js'],
+        });
+        // Laisse le temps au script de s'exécuter et d'écrire dans storage.session
+        await sleep(300);
+        const session = await getSession();
+        if (session.sessionid) return session;
+      } catch (_) { /* onglet inaccessible */ }
+    }
+  } catch (_) {}
+  return null;
 }
 
 // ── ANALYSE ───────────────────────────────────────────────────────────────────
