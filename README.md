@@ -1,6 +1,6 @@
 # Steam Badge Optimizer — Chrome Extension
 
-> Automatise l'optimisation des badges Steam : vente des cartes en double, achat des cartes manquantes et craft des badges, conversion des gemmes.
+> Automate your Steam badge farming: sell duplicate cards, buy missing ones, craft badges, and grind items into gems — all from a single popup.
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)
@@ -8,80 +8,83 @@
 
 ---
 
-## Fonctionnalités
+## Features
 
-- **Scanner l'inventaire** — analyse ton inventaire Steam, toutes tes pages de badges et les prix du marché en temps réel
-- **Vendre les doublons** — met automatiquement en vente les cartes excédentaires au meilleur prix
-- **Compléter & Crafter** — place les ordres d'achat pour les cartes manquantes, puis craft les badges
-- **Convertir en Gemmes** — broie les fonds d'écran et emoticônes en gemmes
+- **Scan Inventory** — analyzes your Steam inventory, all your badge pages, and live market prices in one click
+- **Sell Duplicates** — automatically lists your extra cards at the best market price
+- **Complete & Craft** — places buy orders for missing cards, then crafts the badges
+- **Convert to Gems** — grinds backgrounds and emoticons into gems
 
-### Algorithme d'optimisation
+### Optimization Algorithm
 
-4 stratégies au choix :
+4 strategies to choose from:
 
-| Stratégie | Description |
-|-----------|-------------|
-| **Max ROI** | Maximise le ratio XP / centime dépensé |
-| **Max XP** | Maximise l'XP total obtenu |
-| **Max Badges** | Maximise le nombre de badges craftés |
-| **Max Profit** | Priorité aux badges qui rapportent de l'argent net |
+| Strategy | Description |
+|----------|-------------|
+| **Max ROI** | Maximizes XP gained per cent spent |
+| **Max XP** | Maximizes total XP earned |
+| **Max Badges** | Maximizes the number of badges crafted |
+| **Max Profit** | Prioritizes badges that generate net profit |
 
-Catégories de badges détectées automatiquement :
-- 🟢 **Gratuit** — tu possèdes déjà toutes les cartes
-- 🟡 **Rentable** — le craft génère un bénéfice net (revente > achat)
-- 🔵 **Efficace** — excellent ratio XP/¢ (≥ 2 XP par centime)
-- 🔴 **Coûteux** — craft possible mais moins avantageux
+Badge categories detected automatically:
+
+| Category | Meaning |
+|----------|---------|
+| 🟢 **Free** | You already own all the cards — craft costs nothing |
+| 🟡 **Profitable** | Net cost is negative — crafting actually earns money |
+| 🔵 **Efficient** | Great XP-per-cent ratio (≥ 2 XP / ¢) |
+| 🔴 **Expensive** | Craftable but less cost-efficient |
 
 ---
 
 ## Installation
 
-> L'extension n'est pas sur le Chrome Web Store (usage personnel). Installation en mode développeur :
+> This extension is not on the Chrome Web Store. Install it in developer mode:
 
-1. **Clone** ce repo ou télécharge le ZIP
-2. Ouvre Chrome → `chrome://extensions/`
-3. Active le **Mode développeur** (en haut à droite)
-4. Clique **Charger l'extension non empaquetée**
-5. Sélectionne le dossier `extension/`
-
----
-
-## Utilisation
-
-1. **Connecte-toi** sur [steamcommunity.com](https://steamcommunity.com) (la session est détectée automatiquement)
-2. Pour les **ordres d'achat** : passe une commande sur le marché Steam une fois (l'extension capturera les infos de facturation nécessaires)
-3. Ouvre l'extension, configure ta stratégie dans **Réglages**
-4. Clique **Scanner l'inventaire**
-5. Lance les phases dans l'ordre que tu veux
+1. **Clone** this repo or download the ZIP
+2. Open Chrome and go to `chrome://extensions/`
+3. Enable **Developer mode** (top-right toggle)
+4. Click **Load unpacked**
+5. Select the `extension/` folder
 
 ---
 
-## Confidentialité
+## How to Use
 
-- **Aucune donnée n'est envoyée** à un serveur externe
-- L'extension communique **uniquement avec steamcommunity.com** (tes appels Steam habituels)
-- Aucun mot de passe, aucun identifiant Steam Guard n'est lu ou stocké
-- La session Steam (`sessionID`) est lue depuis la page déjà ouverte dans ton navigateur
-- Tout est stocké localement via `chrome.storage` (inventaire en cache 6h, réglages)
+1. **Log in** on [steamcommunity.com](https://steamcommunity.com) — the session is detected automatically
+2. **For buy orders**: place one market order manually on Steam first (the extension will capture the required billing fields)
+3. Open the extension, pick your strategy under **Settings**
+4. Click **Scan Inventory**
+5. Run the actions in any order you prefer
 
 ---
 
-## Structure du projet
+## Privacy
+
+- **No data is sent to any external server**
+- The extension only communicates with **steamcommunity.com** — the same requests your browser already makes
+- No password, no Steam Guard code is ever read or stored
+- The Steam session (`sessionID`) is read from the page already open in your browser
+- Everything is stored locally via `chrome.storage` (inventory cached for 6 hours, settings persisted)
+
+---
+
+## Project Structure
 
 ```
 extension/
 ├── manifest.json
 ├── background/
-│   └── service-worker.js     # Logique principale, gestion des queues
+│   └── service-worker.js     # Core logic, queue management, rate limiting
 ├── content/
-│   └── steam-bridge.js       # Capture sessionID + billing depuis la page Steam
+│   └── steam-bridge.js       # Captures sessionID + billing info from the Steam page
 ├── lib/
-│   ├── steam-api.js          # Appels API Steam (inventaire, marché, craft…)
-│   ├── inventory.js          # Parsing de l'inventaire
-│   ├── badges.js             # Parsing des pages de badges
-│   ├── pricing.js            # Calcul des frais Steam, cache des prix
-│   ├── optimizer.js          # Algorithme d'optimisation (4 stratégies)
-│   └── storage.js            # Wrappers chrome.storage
+│   ├── steam-api.js          # Steam API calls (inventory, market, craft…)
+│   ├── inventory.js          # Inventory parsing
+│   ├── badges.js             # Badge page HTML parsing
+│   ├── pricing.js            # Steam fee formula, price cache
+│   ├── optimizer.js          # Optimization algorithm (4 strategies)
+│   └── storage.js            # chrome.storage wrappers
 ├── popup/
 │   ├── popup.html
 │   ├── popup.css
@@ -91,14 +94,14 @@ extension/
 
 ---
 
-## Avertissement
+## Disclaimer
 
-Cet outil automatise des actions sur le marché Steam. Utilise-le de façon raisonnée :
-- Respecte les limites de taux de l'API Steam (délai configurable dans les réglages)
-- L'auteur n'est pas responsable d'éventuelles restrictions de compte
+This tool automates actions on the Steam marketplace. Use it responsibly:
+- Respect Steam API rate limits (configurable delay in Settings)
+- The author is not responsible for any account restrictions
 
 ---
 
-## Licence
+## License
 
 [MIT](LICENSE) — © 2026 Masterze21
