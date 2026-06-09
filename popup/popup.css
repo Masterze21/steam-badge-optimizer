@@ -382,6 +382,7 @@ header {
 .strategy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .strat-opt input { display: none; }
 .strat-card {
+  position: relative;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   padding: 8px 6px;
   background: var(--c-surface);
@@ -400,6 +401,47 @@ header {
 .strat-ico  { display: flex; align-items: center; justify-content: center; color: var(--c-text-dim); transition: color .12s; }
 .strat-name { font-size: 11px; font-weight: 700; color: var(--c-text); }
 .strat-desc { font-size: 10px; color: var(--c-text-dim); }
+
+/* ── Pastille d'info « i » + infobulle au survol ─────────────────────────── */
+.strat-info {
+  position: absolute; top: 4px; right: 4px;
+  width: 15px; height: 15px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--c-text-muted);
+  cursor: help; z-index: 2;
+  transition: color .12s;
+}
+.strat-info:hover, .strat-info:focus { color: var(--c-accent); outline: none; }
+.ico-i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.ico-i-dot { fill: currentColor; stroke: none; }
+
+.strat-tip {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  right: -5px;
+  width: 160px;
+  padding: 8px 10px;
+  background: #0d1218;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0,0,0,.6);
+  color: var(--c-text);
+  font-size: 10.5px; font-weight: 400; line-height: 1.45;
+  text-align: left; letter-spacing: .1px;
+  opacity: 0; visibility: hidden; transform: translateY(3px);
+  transition: opacity .14s ease, transform .14s ease, visibility .14s;
+  pointer-events: none; z-index: 50;
+}
+.strat-info:hover .strat-tip,
+.strat-info:focus .strat-tip { opacity: 1; visibility: visible; transform: translateY(0); }
+.strat-tip::after {
+  content: ''; position: absolute; top: 100%; right: 8px;
+  border: 5px solid transparent; border-top-color: var(--c-border);
+}
+.strat-tip::before {
+  content: ''; position: absolute; top: calc(100% - 1px); right: 8px;
+  border: 5px solid transparent; border-top-color: #0d1218; z-index: 1;
+}
 
 /* Toggles */
 .toggle-list { display: flex; flex-direction: column; gap: 6px; }

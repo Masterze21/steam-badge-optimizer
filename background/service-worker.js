@@ -31,7 +31,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Messages depuis le popup
   switch (msg.type) {
     case 'ANALYZE':
-      handleAnalyze().then(sendResponse).catch(e => sendResponse({ error: e.message }));
+      handleAnalyze().then(sendResponse).catch(e => {
+        running = false; currentPhase = null; // évite que l'UI reste bloquée
+        sendResponse({ error: e.message });
+      });
       return true;
     case 'RUN_PHASE1':
       runPhase1().then(sendResponse).catch(e => sendResponse({ error: e.message }));
@@ -166,25 +169,42 @@ async function handleAnalyze() {
 
   const settings = await getSettings();
   const PRICE_TTL = 6 * 3600 * 1000; // 6h
+  const BADGE_DELAY = 350; // pages badge = GET léger, peu rate-limité
 
-  progress = { done: 0, total: 0, lastAction: 'Récupération inventaire...' };
+  running = true;
+  paused = false;
+  currentPhase = 'analyze';
+  progress = { done: 0, total: 0, lastAction: 'Récupération de l\'inventaire…' };
 
   // 1. Inventaire
   const rawInv = await fetchInventory(session.steamid);
   const inv = parseInventory(rawInv);
-  const appids = Object.keys(inv.byApp);
+
+  // FILTRE : ne scanner que les jeux où on possède des CARTES (item_class_2).
+  // Sans ça on scrape une page badge pour chaque jeu ayant emoticône/fond d'écran
+  // (~99 jeux) au lieu des ~29 jeux réellement pertinents.
+  const exclude = new Set((settings.excludeAppids || []).map(String));
+  let appids = Object.keys(inv.byApp).filter(a => {
+    if (exclude.has(String(a))) return false;
+    const g = inv.byApp[a];
+    return g.cards.length > 0 || (settings.includeFoils && g.foilCards.length > 0);
+  });
+
   progress.total = appids.length;
-  progress.lastAction = `Inventaire: ${inv.items.length} items, ${appids.length} jeux`;
+  progress.lastAction = `${inv.items.length} items · ${appids.length} jeux avec cartes`;
 
   // 2. Badges
-  progress.lastAction = 'Scraping badges...';
   const badgesData = {};
   for (let i = 0; i < appids.length; i++) {
+    if (!running) break; // permet l'annulation via STOP
+    await waitIfPaused();
+
     const appid = appids[i];
     try {
       const html = await fetchBadgePage(session.steamid, appid, false);
       badgesData[appid] = { normal: parseBadgePage(html), foil: null };
       if (settings.includeFoils && inv.byApp[appid].foilCards.length > 0) {
+        await sleep(BADGE_DELAY);
         const foilHtml = await fetchBadgePage(session.steamid, appid, true);
         badgesData[appid].foil = parseBadgePage(foilHtml);
       }
@@ -193,11 +213,11 @@ async function handleAnalyze() {
     }
     progress.done = i + 1;
     progress.lastAction = `Badges ${i + 1}/${appids.length}`;
-    await sleep(settings.delayMs || 1000);
+    await sleep(BADGE_DELAY);
   }
 
   // 3. Prix (avec cache 6h)
-  progress.lastAction = 'Récupération des prix...';
+  progress.lastAction = 'Récupération des prix du marché…';
   let priceMap = await getPriceCache();
   const now = Date.now();
   const staleAppids = appids.filter(a => {
@@ -208,12 +228,17 @@ async function handleAnalyze() {
     return !priceMap[firstMhn] || (now - priceMap[firstMhn].ts > PRICE_TTL);
   });
 
+  progress.done = 0;
+  progress.total = staleAppids.length;
   for (let i = 0; i < staleAppids.length; i++) {
+    if (!running) break; // annulation
+    await waitIfPaused();
     const appid = staleAppids[i];
     try {
       const results = await fetchPricesForGame(appid, settings.delayMs || 1000);
       priceMap = buildPriceMap(priceMap, results);
     } catch (_) {}
+    progress.done = i + 1;
     progress.lastAction = `Prix ${i + 1}/${staleAppids.length}`;
   }
   await setPriceCache(priceMap);
@@ -244,6 +269,10 @@ async function handleAnalyze() {
   plan.analyzedAt = Date.now();
 
   await setPlan(plan);
+
+  running = false;
+  currentPhase = null;
+  progress.lastAction = 'Analyse terminée';
 
   return {
     ok: true,
