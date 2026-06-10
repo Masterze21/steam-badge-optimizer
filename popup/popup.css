@@ -379,6 +379,35 @@ header {
 }
 
 /* Stratégie : grille 2×2 */
+/* ── Panneau algorithme (unique) ───────────────────────────────────────────── */
+.algo-box {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-sub);
+  border-left: 3px solid var(--c-accent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.algo-title {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 700; color: var(--c-text);
+  margin-bottom: 5px;
+}
+.algo-title .ico { color: var(--c-accent); }
+.algo-desc { font-size: 10.5px; line-height: 1.55; color: var(--c-text-dim); margin: 0; }
+.algo-desc b { color: var(--c-text); font-weight: 600; }
+
+/* ── Rapport d'exécution ──────────────────────────────────────────────────── */
+.report-line {
+  font-size: 10.5px; line-height: 1.5;
+  padding: 7px 10px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-sub);
+  border-radius: var(--radius);
+  color: var(--c-text-dim);
+}
+.report-line .rep-ok   { color: var(--c-green, #6c9a3f); font-weight: 700; }
+.report-line .rep-fail { color: var(--c-red, #bf3535); font-weight: 700; }
+
 .strategy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .strat-opt input { display: none; }
 .strat-card {

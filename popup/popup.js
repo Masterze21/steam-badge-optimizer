@@ -75,6 +75,20 @@ async function refreshStatus() {
     renderPlanTab(status.plan);
   }
 
+  // Dernier rapport d'exécution
+  const rl = $('report-line');
+  if (rl && status.report) {
+    const r = status.report;
+    const when = new Date(r.ts).toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' });
+    let html = `<b>${r.phase}</b> (${when}) — <span class="rep-ok">${r.ok} ok</span>`;
+    if (r.bought)   html += ` · ${r.bought} achetées`;
+    if (r.skipped)  html += ` · ${r.skipped} sans acheteur`;
+    if (r.fail)     html += ` · <span class="rep-fail">${r.fail} erreur(s)</span>`;
+    if (r.firstError) html += `<br>↳ ${String(r.firstError).slice(0, 90)}`;
+    rl.innerHTML = html;
+    rl.classList.remove('hidden');
+  }
+
   // Running / progress
   const running = status.running;
   $('progress-section').classList.toggle('hidden', !running);
@@ -286,10 +300,6 @@ function bindEvents() {
 
 async function loadSettings() {
   const s = await new Promise(r => chrome.storage.local.get('settings', d => r(d.settings || {})));
-  if (s.strategy) {
-    const r = document.querySelector(`input[name="strategy"][value="${s.strategy}"]`);
-    if (r) r.checked = true;
-  }
   if (s.includeFoils)       $('toggle-foils').checked = true;
   if (s.multiLevel !== false) $('toggle-multilevel').checked = true;
   $('toggle-gemsmart').checked = s.gemSmart !== false;
@@ -301,9 +311,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  const strategy = document.querySelector('input[name="strategy"]:checked')?.value || 'maxROI';
   const settings = {
-    strategy,
     includeFoils:    $('toggle-foils').checked,
     multiLevel:      $('toggle-multilevel').checked,
     gemSmart:        $('toggle-gemsmart').checked,
