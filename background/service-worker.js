@@ -83,7 +83,27 @@ async function getStatus() {
   const session = await resolveSession();
   const billing = await getBilling();
   const plan = await getPlan();
+  // Si le billing manque, on (ré)injecte le bridge dans les onglets marché ouverts :
+  // la capture DOM lira l'adresse pré-remplie sans recharger la page. (fire-and-forget)
+  if (!billing) ensureBridgeInSteamTabs();
   return { running, paused, currentPhase, progress, hasSession: !!session.sessionid, hasBilling: !!billing, plan };
+}
+
+// Réinjecte les content scripts dans les onglets steamcommunity ouverts (throttlé).
+let lastBridgeInject = 0;
+async function ensureBridgeInSteamTabs() {
+  const now = Date.now();
+  if (now - lastBridgeInject < 8000) return; // évite le spam (getStatus est pollé)
+  lastBridgeInject = now;
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://steamcommunity.com/*' });
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/steam-bridge-main.js'], world: 'MAIN' });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/steam-bridge.js'] });
+      } catch (_) { /* onglet inaccessible */ }
+    }
+  } catch (_) {}
 }
 
 // ── Résolution de session (multi-sources, ordre de fiabilité) ──────────────────

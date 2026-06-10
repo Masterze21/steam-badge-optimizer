@@ -1,11 +1,12 @@
 // Tourne dans le MAIN world — accès aux variables JavaScript de la page Steam
 // (window.g_sessionID, g_steamID, etc. sont invisibles depuis le monde ISOLATED)
 
-// Guard contre les injections multiples (tryInjectIntoSteamTabs peut être appelé plusieurs fois)
-if (window.__sbo_main_loaded) return;
-window.__sbo_main_loaded = true;
-
 (function () {
+  // Garde anti-injection multiple — DOIT être à l'intérieur de la fonction
+  // (un `return` au top-level est une SyntaxError : Chrome n'encapsule pas
+  //  les content scripts MAIN world → tout le fichier échouerait à parser).
+  if (window.__sbo_main_loaded) return;
+  window.__sbo_main_loaded = true;
 
   // ── Session Steam ────────────────────────────────────────────────────────────
   function dispatch() {
@@ -37,7 +38,6 @@ window.__sbo_main_loaded = true;
     for (const k of BILLING_KEYS) {
       if (obj[k] !== undefined && obj[k] !== '') { billing[k] = obj[k]; has = true; }
     }
-    // On ne déclenche que si on a une vraie adresse (évite les captures partielles)
     if (has && (billing.billing_address || billing.billing_country)) {
       document.dispatchEvent(new CustomEvent('__sbo_billing', { detail: billing }));
     }
@@ -56,14 +56,14 @@ window.__sbo_main_loaded = true;
   const origFetch = window.fetch;
   window.fetch = function (...args) {
     const [input, init] = args;
-    const url = typeof input === 'string' ? input : input?.url;
-    if (url && url.includes('/market/createbuyorder/') && init?.body) {
+    const url = typeof input === 'string' ? input : (input && input.url);
+    if (url && url.includes('/market/createbuyorder/') && init && init.body) {
       captureFromBody(bodyToObj(init.body));
     }
     return origFetch.apply(this, args);
   };
 
-  // Hook XMLHttpRequest (jQuery $J.ajax → XHR : c'est la voie réelle du marché Steam)
+  // Hook XMLHttpRequest (jQuery $J.ajax → XHR : la voie réelle du marché Steam)
   const origOpen = XMLHttpRequest.prototype.open;
   const origSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open = function (method, url) {
@@ -78,5 +78,4 @@ window.__sbo_main_loaded = true;
     } catch (_) {}
     return origSend.apply(this, arguments);
   };
-
 })();
