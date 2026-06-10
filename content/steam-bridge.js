@@ -37,10 +37,43 @@ document.documentElement.setAttribute('data-steam-bridge', '2');
   // (cas où l'événement initial a été émis avant que ce listener soit prêt)
   document.dispatchEvent(new CustomEvent('__sbo_ping'));
 
-  // ── Réception billing depuis le MAIN world ───────────────────────────────────
+  // ── Réception billing depuis le MAIN world (hooks fetch/XHR) ─────────────────
   document.addEventListener('__sbo_billing', e => {
-    const billing = e.detail;
-    chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing: e.detail }).catch(() => {});
   });
+
+  // ── Capture DOM : l'adresse est pré-remplie par Steam dès l'ouverture de la
+  //    boîte d'achat. Le DOM est partagé avec le monde ISOLATED → on lit directement.
+  function readBillingFromDOM() {
+    const get = name => {
+      for (const el of document.querySelectorAll(`input[name="${name}"]`)) {
+        if (el.value && el.value.trim()) return el.value.trim();
+      }
+      return '';
+    };
+    const billing = {};
+    for (const k of ['first_name', 'last_name', 'billing_address', 'billing_address_two', 'billing_city', 'billing_country', 'billing_state']) {
+      const v = get(k);
+      if (v) billing[k] = v;
+    }
+    const pc = get('billing_postal_code') || get('billing_po');
+    if (pc) { billing.billing_po = pc; billing.billing_postal_code = pc; }
+
+    if (billing.billing_address && billing.billing_country) {
+      chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing }).catch(() => {});
+      return true;
+    }
+    return false;
+  }
+
+  // Sur les pages marché : observe l'apparition de la boîte d'achat puis capture
+  if (location.href.includes('/market')) {
+    if (!readBillingFromDOM()) {
+      const obs = new MutationObserver(() => { if (readBillingFromDOM()) obs.disconnect(); });
+      obs.observe(document.documentElement, { childList: true, subtree: true });
+      // Sécurité : on coupe l'observation après 5 min pour ne pas tourner indéfiniment
+      setTimeout(() => obs.disconnect(), 5 * 60 * 1000);
+    }
+  }
 
 })();

@@ -15,14 +15,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'BILLING_CAPTURED') {
     getBilling().then(existing => {
-      if (!existing) {
+      const incomingComplete = msg.billing && msg.billing.billing_address;
+      // On stocke si rien n'existe, ou si l'arrivant est plus complet (a une adresse)
+      if (!existing || (incomingComplete && !existing.billing_address)) {
         setBilling(msg.billing);
-        chrome.notifications.create('billing_captured', {
-          type: 'basic',
-          iconUrl: '../icons/icon48.png',
-          title: 'Steam Badge Optimizer',
-          message: 'Infos de facturation capturées ! Tu peux maintenant utiliser la Phase 2.',
-        });
+        if (!existing) {
+          chrome.notifications.create('billing_captured', {
+            type: 'basic',
+            iconUrl: '../icons/icon48.png',
+            title: 'Steam Badge Optimizer',
+            message: 'Infos de facturation capturées ✓ Tu peux maintenant compléter & crafter.',
+          });
+        }
       }
     });
     return false;
