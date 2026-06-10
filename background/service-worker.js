@@ -293,6 +293,13 @@ async function handleAnalyze() {
 
   await setPlan(plan);
 
+  // Un nouveau plan invalide les anciennes files d'exécution : on les efface
+  // pour que Phase 1/2/Gems les reconstruisent depuis CE plan (sinon réutilisation
+  // de files périmées/terminées → « rien ne s'exécute »).
+  await setQueue('sell', null);
+  await setQueue('buy', null);
+  await setQueue('craft', null);
+
   running = false;
   currentPhase = null;
   progress.lastAction = 'Analyse terminée';
@@ -334,6 +341,7 @@ async function runPhase1() {
 
   const errors = [];
   let startIdx = queue.findIndex(i => !i.done);
+  if (startIdx === -1) startIdx = queue.length; // tout est déjà fait → on saute la boucle
 
   for (let i = startIdx; i < queue.length; i++) {
     if (!running) break;
@@ -397,8 +405,6 @@ async function runPhase1() {
 async function runPhase2() {
   const session = await resolveSession();
   if (!session.sessionid) throw new Error('Session Steam manquante.');
-  const billing = await getBilling();
-  if (!billing) throw new Error('Infos de facturation manquantes. Fais un achat manuel sur le marché Steam d\'abord.');
   const plan = await getPlan();
   if (!plan) throw new Error('Lance d\'abord l\'analyse.');
   const settings = await getSettings();
@@ -415,6 +421,15 @@ async function runPhase2() {
   if (!craftQueue) {
     craftQueue = expandCraftQueue(plan.selected);
     await setQueue('craft', craftQueue);
+  }
+
+  // Billing requis UNIQUEMENT s'il reste des cartes à acheter.
+  // Un plan 100 % "free craft" (rien à acheter) ne doit PAS être bloqué par le billing.
+  const needBuy = buyQueue.some(i => !i.done);
+  let billing = null;
+  if (needBuy) {
+    billing = await getBilling();
+    if (!billing) throw new Error('Infos de facturation manquantes pour les achats de cartes. Ouvre une boîte d\'achat sur le marché Steam pour les capturer (les crafts gratuits, eux, ne nécessitent rien).');
   }
 
   running = true;
