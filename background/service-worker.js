@@ -5,47 +5,55 @@ import { parseBadgePage } from '../lib/badges.js';
 import { buildPriceMap, sellerReceivesForBuyerPays } from '../lib/pricing.js';
 import { buildPlan, expandSellQueue, expandBuyQueue, expandCraftQueue } from '../lib/optimizer.js';
 
-// ── En-têtes Referer/Origin via declarativeNetRequest ─────────────────────────
-// `Referer` est un en-tête INTERDIT sur fetch() : impossible à poser depuis le
-// service worker. Steam valide le Referer sur sellitem/createbuyorder/craft →
-// sans DNR, ces POST peuvent être rejetés silencieusement. Les règles ne
-// s'appliquent qu'aux requêtes émises par CETTE extension (initiatorDomains).
-const DNR_RULES = [
-  { id: 1, urlFilter: '||steamcommunity.com/market/sellitem',       referer: 'https://steamcommunity.com/my/inventory/' },
-  { id: 2, urlFilter: '||steamcommunity.com/market/createbuyorder', referer: 'https://steamcommunity.com/market/' },
-  { id: 3, urlFilter: '||steamcommunity.com/market/itemordershistogram', referer: 'https://steamcommunity.com/market/' },
-  { id: 4, urlFilter: 'ajaxcraftbadge',                              referer: 'https://steamcommunity.com/my/badges/' },
-  { id: 5, urlFilter: 'ajaxgrindintogoo',                            referer: 'https://steamcommunity.com/my/inventory/' },
-  { id: 6, urlFilter: 'ajaxgetgoovalue',                             referer: 'https://steamcommunity.com/my/inventory/' },
-];
+// ── Transport via onglet Steam ────────────────────────────────────────────────
+// Steam répond HTTP 406 aux POST marché émis depuis le contexte extension
+// (Origin chrome-extension://, Referer absent — en-têtes non modifiables sur
+// fetch). Vérifié en réel : la MÊME requête passe depuis une page Steam.
+// → on exécute donc les appels sensibles DANS un onglet steamcommunity,
+//   ouvert en arrière-plan si aucun n'existe.
 
-async function setupHeaderRules() {
-  try {
-    const rules = DNR_RULES.map(r => ({
-      id: r.id,
-      priority: 1,
-      action: {
-        type: 'modifyHeaders',
-        requestHeaders: [
-          { header: 'Referer', operation: 'set', value: r.referer },
-          { header: 'Origin',  operation: 'set', value: 'https://steamcommunity.com' },
-        ],
-      },
-      condition: {
-        urlFilter: r.urlFilter,
-        initiatorDomains: [chrome.runtime.id],
-        resourceTypes: ['xmlhttprequest'],
-      },
-    }));
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: DNR_RULES.map(r => r.id),
-      addRules: rules,
-    });
-  } catch (e) {
-    console.warn('[SBO] DNR setup:', e.message);
+async function getSteamTabId() {
+  const tabs = await chrome.tabs.query({ url: 'https://steamcommunity.com/*' });
+  let tab = tabs.find(t => t.status === 'complete') || tabs[0];
+  if (!tab) {
+    tab = await chrome.tabs.create({ url: 'https://steamcommunity.com/market/', active: false });
   }
+  for (let i = 0; i < 40; i++) {
+    try {
+      const t = await chrome.tabs.get(tab.id);
+      if (t.status === 'complete') return t.id;
+    } catch (_) { throw new Error('Onglet Steam fermé pendant l\'opération.'); }
+    await sleep(250);
+  }
+  return tab.id;
 }
-setupHeaderRules();
+
+// Exécute un fetch même-origine depuis l'onglet Steam (en-têtes de page parfaits).
+async function tabFetch(url, fields = null) {
+  const tabId = await getSteamTabId();
+  const [r] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async (url, fields) => {
+      try {
+        const opts = { credentials: 'include' };
+        if (fields) { opts.method = 'POST'; opts.body = new URLSearchParams(fields); }
+        const res = await fetch(url, opts);
+        const text = await res.text();
+        try { return { status: res.status, json: JSON.parse(text) }; }
+        catch (_) { return { status: res.status, text: text.slice(0, 300) }; }
+      } catch (e) { return { status: 0, error: String(e) }; }
+    },
+    args: [url, fields],
+  });
+  const out = r && r.result;
+  if (!out) throw new Error('Exécution dans l\'onglet Steam impossible.');
+  if (out.error) throw new Error(out.error);
+  if (out.json) return out.json;
+  throw Object.assign(new Error(`HTTP ${out.status}${out.text ? ' — ' + out.text.slice(0, 80) : ''}`), { status: out.status });
+}
+
+const pagePost = (url, fields) => tabFetch(url, fields);
+const pageGet  = (url) => tabFetch(url, null);
 
 // ── État d'exécution ──────────────────────────────────────────────────────────
 
@@ -279,7 +287,7 @@ async function histoThrottled(nameid) {
   const wait = lastHistoAt + HISTO_MIN_INTERVAL - Date.now();
   if (wait > 0) await sleep(wait);
   lastHistoAt = Date.now();
-  return fetchHistogram(nameid);
+  return fetchHistogram(nameid, pageGet);
 }
 
 async function runPhase1() {
@@ -328,7 +336,7 @@ async function runPhase1() {
         item.done = true; item.skipped = true; skipped++;
         progress.lastAction = `Aucun ordre d'achat exploitable : ${item.name || item.mhn}`;
       } else {
-        const res = await sellItem({ sessionid: session.sessionid, steamid: session.steamid, assetid: item.assetid, priceNet });
+        const res = await sellItem({ sessionid: session.sessionid, assetid: item.assetid, priceNet }, pagePost);
         if (res && res.success) {
           item.done = true; listed++;
           progress.lastAction = `Listé à ${(bid / 100).toFixed(2)} € (instant) : ${item.name || item.mhn}`;
@@ -401,7 +409,7 @@ async function runPhase2() {
         priceTotal: item.askPerCard * item.qty,
         quantity: item.qty,
         billing,
-      });
+      }, pagePost);
       if (res && res.success === 1) {
         item.done = true; item.orderId = res.buy_orderid; bought += item.qty;
       } else {
@@ -432,7 +440,7 @@ async function runPhase2() {
     progress.lastAction = `Craft niv.${item.targetLevel} : ${item.title || item.appid}`;
 
     try {
-      const res = await craftBadge({ sessionid: session.sessionid, steamid: session.steamid, appid: item.appid, foil: item.isFoil });
+      const res = await craftBadge({ sessionid: session.sessionid, steamid: session.steamid, appid: item.appid, foil: item.isFoil }, pagePost);
       if (res && res.success === 1) {
         item.done = true; crafted++;
         progress.lastAction = `Badge crafté (+100 XP) : ${item.title || item.appid}`;
@@ -499,10 +507,10 @@ async function runGems() {
     progress.done = i;
     progress.lastAction = `Broyage : ${item.name}`;
     try {
-      const gooInfo = await getGooValue({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid });
+      const gooInfo = await getGooValue({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid }, pageGet);
       if (!gooInfo.goo_value) continue;
       await sleep(300);
-      const res = await grindIntoGoo({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid, gooValueExpected: gooInfo.goo_value });
+      const res = await grindIntoGoo({ sessionid: session.sessionid, steamid: session.steamid, sourceAppid: item.sourceAppid, assetid: item.assetid, gooValueExpected: gooInfo.goo_value }, pagePost);
       if (res.success === 1) totalGems += parseInt(res.goo_value_received || '0', 10);
       else errors.push({ mhn: item.name, msg: `success=${res.success}` });
     } catch (e) { errors.push({ mhn: item.name, msg: e.message }); }

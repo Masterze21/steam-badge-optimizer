@@ -78,7 +78,7 @@ Missing cards are acquired through buy orders placed **at the lowest ask**, so t
 - **No data leaves your browser** — the extension only talks to `steamcommunity.com`, like your normal browsing
 - No password and no Steam Guard code is ever read or stored
 - Session is read from Steam's own cookies via the `cookies` permission; billing fields are captured locally from Steam's pre-filled buy form and stored in `chrome.storage.local`
-- `declarativeNetRequest` is used solely to set correct `Referer`/`Origin` headers on the extension's *own* Steam API calls (MV3 forbids setting them on `fetch`)
+- Market actions (sell / buy order / craft / grind) are executed **inside an open steamcommunity.com tab** — Steam rejects POSTs coming from an extension context (HTTP 406, wrong `Origin`/`Referer`), so the extension runs them in page context, exactly like clicking the button yourself
 
 ---
 
