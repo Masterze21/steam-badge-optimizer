@@ -49,7 +49,10 @@
     const pc = get('billing_postal_code') || get('billing_po');
     if (pc) { billing.billing_po = pc; billing.billing_postal_code = pc; }
 
-    if (billing.billing_address && billing.billing_country) {
+    // Capture complète exigée — un billing partiel provoque success:22 sur createbuyorder
+    const complete = billing.first_name && billing.last_name && billing.billing_address
+      && billing.billing_city && billing.billing_country && (billing.billing_po || billing.billing_postal_code);
+    if (complete) {
       chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing }).catch(() => {});
       return true;
     }

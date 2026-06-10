@@ -38,7 +38,9 @@
     for (const k of BILLING_KEYS) {
       if (obj[k] !== undefined && obj[k] !== '') { billing[k] = obj[k]; has = true; }
     }
-    if (has && (billing.billing_address || billing.billing_country)) {
+    // On n'émet QUE si la capture est complète (une capture partielle stockée
+    // bloque les ordres d'achat avec success:22 côté Steam)
+    if (has && billing.billing_address && billing.first_name && billing.billing_city) {
       document.dispatchEvent(new CustomEvent('__sbo_billing', { detail: billing }));
     }
   }

@@ -85,10 +85,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'BILLING_CAPTURED') {
     getBilling().then(existing => {
-      const complete = msg.billing && msg.billing.billing_address;
-      if (!existing || (complete && !existing.billing_address)) {
+      if (!isBillingComplete(msg.billing)) return; // jamais stocker une capture partielle
+      if (!isBillingComplete(existing)) {
         setBilling(msg.billing);
-        if (!existing) notify('billing_captured', 'Steam Badge Optimizer', 'Infos de facturation capturées ✓');
+        notify('billing_captured', 'Steam Badge Optimizer', 'Infos de facturation capturées ✓');
       }
     });
     return false;
@@ -119,9 +119,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+// Un billing incomplet est inutilisable : Steam répond success:22 sur createbuyorder.
+function isBillingComplete(b) {
+  return !!(b && b.first_name && b.last_name && b.billing_address
+    && b.billing_city && b.billing_country && (b.billing_po || b.billing_postal_code));
+}
+
 async function getStatus() {
   const session = await resolveSession();
-  const billing = await getBilling();
+  let billing = await getBilling();
+  // Purge une éventuelle capture partielle héritée des versions précédentes
+  if (billing && !isBillingComplete(billing)) { await setBilling(null); billing = null; }
   const plan = await getPlan();
   const report = await getReport();
   if (!billing) ensureBridgeInSteamTabs(); // capture DOM de l'adresse si un onglet marché est ouvert
@@ -379,12 +387,15 @@ async function runPhase2() {
   let craftQueue = await getQueue('craft');
   if (!craftQueue) { craftQueue = expandCraftQueue(plan.selected); await setQueue('craft', craftQueue); }
 
-  // Billing exigé UNIQUEMENT s'il y a des achats à faire
+  // Billing COMPLET exigé uniquement s'il y a des achats à faire
   const needBuy = buyQueue.some(i => !i.done);
   let billing = null;
   if (needBuy) {
     billing = await getBilling();
-    if (!billing) throw new Error('Infos de facturation manquantes pour les achats. Ouvre une boîte d\'achat sur le marché Steam (sans valider) pour les capturer. Les crafts gratuits, eux, passeront sans.');
+    if (!isBillingComplete(billing)) {
+      await setBilling(null); // purge une capture partielle inutilisable
+      throw new Error('Infos de facturation incomplètes. Sur une page du marché Steam, clique « Placer un ordre d\'achat » (sans valider) : l\'adresse pré-remplie sera capturée. Les crafts gratuits, eux, passeront sans.');
+    }
   }
 
   running = true; paused = false; currentPhase = 'phase2';
@@ -412,6 +423,25 @@ async function runPhase2() {
       }, pagePost);
       if (res && res.success === 1) {
         item.done = true; item.orderId = res.buy_orderid; bought += item.qty;
+        item.retried = 0;
+      } else if (res && res.success === 84) {
+        // Rate limit achats ("too many purchases") : on patiente puis on retente cet item
+        if ((item.retried || 0) < 2) {
+          item.retried = (item.retried || 0) + 1;
+          progress.lastAction = 'Limite d\'achats Steam — pause 60 s…';
+          await sleep(60000);
+          i--; // retente le même item
+        } else {
+          item.error = 'success=84 — limite d\'achats Steam, réessaie plus tard';
+          errors.push({ mhn: item.mhn, msg: item.error });
+        }
+      } else if (res && res.success === 22) {
+        // Billing refusé par Steam : inutile d'insister sur les items suivants
+        item.error = 'success=22 — facturation refusée';
+        errors.push({ mhn: item.mhn, msg: item.error });
+        await setBilling(null); // force une nouvelle capture propre
+        progress.lastAction = 'Facturation refusée par Steam — recapture nécessaire, achats interrompus';
+        break;
       } else {
         item.error = `success=${res && res.success}${res && res.message ? ' — ' + res.message : ''}`;
         errors.push({ mhn: item.mhn, msg: item.error });
