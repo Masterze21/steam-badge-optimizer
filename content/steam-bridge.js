@@ -49,22 +49,27 @@
     const pc = get('billing_postal_code') || get('billing_po');
     if (pc) { billing.billing_po = pc; billing.billing_postal_code = pc; }
 
-    // Capture complète exigée — un billing partiel provoque success:22 sur createbuyorder
+    // Capture complète exigée — un billing partiel provoque success:22 sur createbuyorder.
+    // Le pays n'est PAS requis (rempli par défaut FR côté achat).
     const complete = billing.first_name && billing.last_name && billing.billing_address
-      && billing.billing_city && billing.billing_country && (billing.billing_po || billing.billing_postal_code);
+      && billing.billing_city && (billing.billing_po || billing.billing_postal_code);
     if (complete) {
+      if (!billing.billing_country) billing.billing_country = 'FR';
       chrome.runtime.sendMessage({ type: 'BILLING_CAPTURED', billing }).catch(() => {});
       return true;
     }
     return false;
   }
 
-  // Sur les pages marché : observe l'apparition de la boîte d'achat puis capture
+  // Sur les pages marché : on SONDE en boucle. Steam Inventory Helper (et Steam)
+  // remplissent les champs via input.value = … → AUCUNE mutation DOM, donc un
+  // MutationObserver ne voit rien. Le polling capte la valeur dès qu'elle apparaît.
   if (location.href.includes('/market')) {
     if (!readBillingFromDOM()) {
-      const obs = new MutationObserver(() => { if (readBillingFromDOM()) obs.disconnect(); });
-      obs.observe(document.documentElement, { childList: true, subtree: true });
-      setTimeout(() => obs.disconnect(), 5 * 60 * 1000); // coupe au bout de 5 min
+      let tries = 0;
+      const timer = setInterval(() => {
+        if (readBillingFromDOM() || ++tries > 200) clearInterval(timer); // ~5 min max
+      }, 1500);
     }
   }
 })();
