@@ -379,6 +379,22 @@ header {
 }
 
 /* Stratégie : grille 2×2 */
+/* ── Formulaire de facturation ─────────────────────────────────────────────── */
+.billing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.billing-grid .billing-full { grid-column: 1 / -1; }
+.billing-state { font-size: 10px; font-weight: 700; }
+.billing-state.ok   { color: var(--c-green, #6c9a3f); }
+.billing-state.miss { color: var(--c-text-muted); }
+.btn-secondary-full {
+  width: 100%; padding: 8px;
+  background: var(--c-surface-hi); color: var(--c-text);
+  border: 1px solid var(--c-border); border-radius: var(--radius);
+  font-size: 11px; font-weight: 600; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.btn-secondary-full:hover { border-color: var(--c-accent); color: #fff; }
+.saved-badge { display: inline-block; margin-top: 6px; font-size: 10px; color: var(--c-green, #6c9a3f); font-weight: 700; }
+
 /* ── Panneau algorithme (unique) ───────────────────────────────────────────── */
 .algo-box {
   background: var(--c-surface);

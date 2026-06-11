@@ -37,6 +37,7 @@ let activeFilter = 'all';
 
 async function init() {
   loadSettings();
+  loadBilling();
   bindEvents();
   await refreshStatus();
   startPolling();
@@ -294,6 +295,57 @@ function bindEvents() {
   });
 
   $('btn-save-settings').addEventListener('click', saveSettings);
+  $('btn-save-billing').addEventListener('click', saveBilling);
+}
+
+// ── Facturation (saisie unique, stockée localement) ────────────────────────────
+
+async function loadBilling() {
+  const b = await new Promise(r => chrome.storage.local.get('billing', d => r(d.billing || null)));
+  if (b) {
+    $('bill-first').value   = b.first_name || '';
+    $('bill-last').value    = b.last_name || '';
+    $('bill-address').value = b.billing_address || '';
+    $('bill-city').value    = b.billing_city || '';
+    $('bill-postal').value  = b.billing_po || b.billing_postal_code || '';
+    $('bill-country').value = b.billing_country || '';
+  }
+  refreshBillingState(b);
+}
+
+function billingComplete(b) {
+  return !!(b && b.first_name && b.last_name && b.billing_address && b.billing_city
+    && b.billing_country && (b.billing_po || b.billing_postal_code));
+}
+
+function refreshBillingState(b) {
+  const el = $('billing-state');
+  if (!el) return;
+  if (billingComplete(b)) { el.textContent = '· complète ✓'; el.className = 'billing-state ok'; }
+  else { el.textContent = '· à renseigner'; el.className = 'billing-state miss'; }
+}
+
+async function saveBilling() {
+  const pc = $('bill-postal').value.trim();
+  const billing = {
+    first_name:       $('bill-first').value.trim(),
+    last_name:        $('bill-last').value.trim(),
+    billing_address:  $('bill-address').value.trim(),
+    billing_address_two: '',
+    billing_city:     $('bill-city').value.trim(),
+    billing_state:    '',
+    billing_country:  ($('bill-country').value.trim() || 'FR').toUpperCase(),
+    billing_po:       pc,
+    billing_postal_code: pc,
+    save_my_address:  '0',
+    tradefee_tax:     '0',
+  };
+  await new Promise(r => chrome.storage.local.set({ billing }, r));
+  refreshBillingState(billing);
+  const el = $('billing-saved');
+  el.textContent = billingComplete(billing) ? 'Enregistré ✓' : 'Enregistré (incomplet — Steam refusera les achats)';
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 2500);
 }
 
 // ── Persistance des réglages ───────────────────────────────────────────────
