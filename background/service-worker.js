@@ -86,9 +86,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'BILLING_CAPTURED') {
     getBilling().then(existing => {
       if (!isBillingComplete(msg.billing)) return; // jamais stocker une capture partielle
-      if (!isBillingComplete(existing)) {
+      // La capture vient du formulaire Steam lui-même (pré-rempli par Steam/SIH avec
+      // l'adresse EXACTE du compte) → elle est autoritaire et remplace une saisie
+      // manuelle qui pourrait ne pas correspondre au pied de la lettre (cause du
+      // success:22). On ne stocke/notifie que si ça change réellement.
+      const changed = !existing || JSON.stringify(existing) !== JSON.stringify(msg.billing);
+      if (changed) {
         setBilling(msg.billing);
-        notify('billing_captured', 'Steam Badge Optimizer', 'Infos de facturation capturées ✓');
+        notify('billing_captured', 'Steam Badge Optimizer', 'Adresse de facturation récupérée depuis Steam ✓');
       }
     });
     return false;

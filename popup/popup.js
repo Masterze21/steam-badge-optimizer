@@ -69,6 +69,11 @@ async function refreshStatus() {
   const ba = $('billing-alert');
   if (ba) ba.classList.toggle('hidden', status.hasBilling !== false);
 
+  // Garde le formulaire en phase avec l'adresse stockée (ex. capturée depuis Steam),
+  // sauf si l'utilisateur est en train d'éditer un champ
+  const editing = /^bill-/.test(document.activeElement && document.activeElement.id || '');
+  if (!editing) loadBilling();
+
   // Plan
   if (status.plan) {
     lastPlan = status.plan;
