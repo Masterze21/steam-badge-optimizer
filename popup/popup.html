@@ -188,8 +188,9 @@
         <input type="text" id="bill-address" class="field-input billing-full" placeholder="Adresse" autocomplete="off">
         <input type="text" id="bill-city" class="field-input" placeholder="Ville" autocomplete="off">
         <input type="text" id="bill-postal" class="field-input" placeholder="Code postal" autocomplete="off">
-        <input type="text" id="bill-country" class="field-input" placeholder="Pays (FR)" maxlength="2" autocomplete="off">
+        <input type="text" id="bill-country" class="field-input" value="FR" maxlength="2" autocomplete="off" title="Pays (optionnel, FR par défaut)">
       </div>
+      <p class="field-hint" style="margin-top:0">Sauvegarde automatique pendant la saisie. Le pays (FR par défaut) est optionnel.</p>
       <button id="btn-save-billing" class="btn-secondary-full">Enregistrer la facturation</button>
       <span id="billing-saved" class="saved-badge hidden">Enregistré ✓</span>
     </div>

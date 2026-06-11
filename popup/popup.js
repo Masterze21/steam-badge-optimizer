@@ -295,7 +295,17 @@ function bindEvents() {
   });
 
   $('btn-save-settings').addEventListener('click', saveSettings);
-  $('btn-save-billing').addEventListener('click', saveBilling);
+  $('btn-save-billing').addEventListener('click', () => saveBilling(true));
+
+  // Sauvegarde automatique de la facturation dès qu'on tape (débounce 500 ms)
+  let billTimer = null;
+  for (const id of ['bill-first', 'bill-last', 'bill-address', 'bill-city', 'bill-postal', 'bill-country']) {
+    const el = $(id);
+    if (el) el.addEventListener('input', () => {
+      clearTimeout(billTimer);
+      billTimer = setTimeout(() => saveBilling(false), 500);
+    });
+  }
 }
 
 // ── Facturation (saisie unique, stockée localement) ────────────────────────────
@@ -314,8 +324,9 @@ async function loadBilling() {
 }
 
 function billingComplete(b) {
+  // Pays optionnel (défaut FR appliqué à l'achat)
   return !!(b && b.first_name && b.last_name && b.billing_address && b.billing_city
-    && b.billing_country && (b.billing_po || b.billing_postal_code));
+    && (b.billing_po || b.billing_postal_code));
 }
 
 function refreshBillingState(b) {
@@ -325,7 +336,7 @@ function refreshBillingState(b) {
   else { el.textContent = '· à renseigner'; el.className = 'billing-state miss'; }
 }
 
-async function saveBilling() {
+async function saveBilling(showToast) {
   const pc = $('bill-postal').value.trim();
   const billing = {
     first_name:       $('bill-first').value.trim(),
@@ -342,10 +353,22 @@ async function saveBilling() {
   };
   await new Promise(r => chrome.storage.local.set({ billing }, r));
   refreshBillingState(billing);
-  const el = $('billing-saved');
-  el.textContent = billingComplete(billing) ? 'Enregistré ✓' : 'Enregistré (incomplet — Steam refusera les achats)';
-  el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 2500);
+  if (showToast) {
+    const el = $('billing-saved');
+    el.textContent = billingComplete(billing) ? 'Enregistré ✓' : 'Manque : ' + missingBillingFields(billing).join(', ');
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 3500);
+  }
+}
+
+function missingBillingFields(b) {
+  const out = [];
+  if (!b.first_name)      out.push('prénom');
+  if (!b.last_name)       out.push('nom');
+  if (!b.billing_address) out.push('adresse');
+  if (!b.billing_city)    out.push('ville');
+  if (!(b.billing_po || b.billing_postal_code)) out.push('code postal');
+  return out;
 }
 
 // ── Persistance des réglages ───────────────────────────────────────────────

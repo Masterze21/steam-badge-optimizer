@@ -120,9 +120,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // Un billing incomplet est inutilisable : Steam répond success:22 sur createbuyorder.
+// Le pays n'est PAS exigé ici : il est rempli par défaut (FR) dans createBuyOrder.
 function isBillingComplete(b) {
   return !!(b && b.first_name && b.last_name && b.billing_address
-    && b.billing_city && b.billing_country && (b.billing_po || b.billing_postal_code));
+    && b.billing_city && (b.billing_po || b.billing_postal_code));
 }
 
 async function getStatus() {
