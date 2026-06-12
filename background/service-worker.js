@@ -1,9 +1,10 @@
-import { getSession, setSession, getBilling, setBilling, getPlan, setPlan, getQueue, setQueue, getSettings, getPriceCache, setPriceCache, getNameIds, setNameIds, getReport, setReport } from '../lib/storage.js';
+import { getSession, setSession, getPlan, setPlan, getQueue, setQueue, getSettings, getPriceCache, setPriceCache, getNameIds, setNameIds, getReport, setReport, getAuthSecrets, setAuthSecrets } from '../lib/storage.js';
 import { fetchInventory, fetchBadgePage, fetchPricesForGame, fetchItemNameId, fetchHistogram, sellItem, createBuyOrder, craftBadge, getGooValue, grindIntoGoo, fetchWallet, sleep } from '../lib/steam-api.js';
 import { parseInventory, getGrindableItems } from '../lib/inventory.js';
 import { parseBadgePage } from '../lib/badges.js';
 import { buildPriceMap, sellerReceivesForBuyerPays } from '../lib/pricing.js';
 import { buildPlan, expandSellQueue, expandBuyQueue, expandCraftQueue } from '../lib/optimizer.js';
+import { fetchConfirmations, actOnConfirmation } from '../lib/steam-confirm.js';
 
 // ── Transport via onglet Steam ────────────────────────────────────────────────
 // Steam répond HTTP 406 aux POST marché émis depuis le contexte extension
@@ -35,7 +36,9 @@ async function tabFetch(url, fields = null) {
     target: { tabId },
     func: async (url, fields) => {
       try {
-        const opts = { credentials: 'include' };
+        // X-Requested-With : indispensable. Sans lui, Steam renvoie 406/success:22 ;
+        // avec lui, il renvoie need_confirmation + confirmation_id (flux normal).
+        const opts = { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } };
         if (fields) { opts.method = 'POST'; opts.body = new URLSearchParams(fields); }
         const res = await fetch(url, opts);
         const text = await res.text();
@@ -83,23 +86,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     setSession({ sessionid: msg.sessionid, steamid: msg.steamid, vanity: msg.vanity, profileType: msg.profileType });
     return false;
   }
-  if (msg.type === 'BILLING_CAPTURED') {
-    getBilling().then(existing => {
-      if (!isBillingComplete(msg.billing)) return; // jamais stocker une capture partielle
-      // La capture vient du formulaire Steam lui-même (pré-rempli par Steam/SIH avec
-      // l'adresse EXACTE du compte) → elle est autoritaire et remplace une saisie
-      // manuelle qui pourrait ne pas correspondre au pied de la lettre (cause du
-      // success:22). On ne stocke/notifie que si ça change réellement.
-      const changed = !existing || JSON.stringify(existing) !== JSON.stringify(msg.billing);
-      if (changed) {
-        setBilling(msg.billing);
-        notify('billing_captured', 'Steam Badge Optimizer', 'Adresse de facturation récupérée depuis Steam ✓');
-      }
-    });
-    return false;
-  }
-
   switch (msg.type) {
+    case 'TEST_CONFIRM':
+      testConfirm().then(sendResponse).catch(e => sendResponse({ error: e.message }));
+      return true;
     case 'ANALYZE':
       handleAnalyze().then(sendResponse).catch(e => {
         running = false; currentPhase = null;
@@ -124,22 +114,71 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// Un billing incomplet est inutilisable : Steam répond success:22 sur createbuyorder.
 // Le pays n'est PAS exigé ici : il est rempli par défaut (FR) dans createBuyOrder.
-function isBillingComplete(b) {
-  return !!(b && b.first_name && b.last_name && b.billing_address
-    && b.billing_city && (b.billing_po || b.billing_postal_code));
-}
-
 async function getStatus() {
   const session = await resolveSession();
-  let billing = await getBilling();
-  // Purge une éventuelle capture partielle héritée des versions précédentes
-  if (billing && !isBillingComplete(billing)) { await setBilling(null); billing = null; }
+  const secrets = await getAuthSecrets();
   const plan = await getPlan();
   const report = await getReport();
-  if (!billing) ensureBridgeInSteamTabs(); // capture DOM de l'adresse si un onglet marché est ouvert
-  return { running, paused, currentPhase, progress, hasSession: !!session.sessionid, hasBilling: !!billing, plan, report };
+  return {
+    running, paused, currentPhase, progress,
+    hasSession: !!session.sessionid,
+    hasSecrets: !!(secrets && secrets.identitySecret && secrets.deviceId),
+    plan, report,
+  };
+}
+
+// ── Confirmations mobiles Steam Guard (auto-confirm, comme SIH) ────────────────
+
+async function getSecretsOrNull() {
+  const s = await getAuthSecrets();
+  return (s && s.identitySecret && s.deviceId) ? s : null;
+}
+
+// Accepte les confirmations marché en attente (jamais les échanges).
+// matchIds : Set d'ids à cibler ; null → toutes les confirmations de type marché.
+async function confirmMarket(steamid, matchIds) {
+  const secrets = await getSecretsOrNull();
+  if (!secrets) return { confirmed: 0, skipped: 'no-secrets' };
+
+  const time = Math.floor(Date.now() / 1000);
+  const list = await fetchConfirmations({
+    steamid, deviceId: secrets.deviceId, identitySecret: secrets.identitySecret, time, getJson: pageGet,
+  });
+
+  let confirmed = 0;
+  for (const c of list) {
+    const tn = String(c.type_name || '').toLowerCase();
+    const isTrade = c.type === 2 || tn.includes('trade');
+    if (isTrade) continue; // SÉCURITÉ : ne jamais auto-confirmer un échange
+    const isMarket = c.type === 3 || /market|listing|buy|sell|order/.test(tn);
+    const matched = matchIds
+      ? (matchIds.has(String(c.id)) || matchIds.has(String(c.creator_id)))
+      : isMarket;
+    if (!matched) continue;
+
+    const t2 = Math.floor(Date.now() / 1000);
+    const ok = await actOnConfirmation({
+      steamid, deviceId: secrets.deviceId, identitySecret: secrets.identitySecret,
+      conf: c, op: 'allow', time: t2, getJson: pageGet,
+    });
+    if (ok) confirmed++;
+    await sleep(800);
+  }
+  return { confirmed, total: list.length };
+}
+
+// Test manuel depuis les réglages : liste les confirmations (sans rien accepter).
+async function testConfirm() {
+  const session = await resolveSession();
+  if (!session.steamid) throw new Error('Session Steam manquante.');
+  const secrets = await getSecretsOrNull();
+  if (!secrets) throw new Error('Renseigne identity_secret et device_id d\'abord.');
+  const time = Math.floor(Date.now() / 1000);
+  const list = await fetchConfirmations({
+    steamid: session.steamid, deviceId: secrets.deviceId, identitySecret: secrets.identitySecret, time, getJson: pageGet,
+  });
+  return { ok: true, count: list.length, types: list.map(c => c.type_name || c.type) };
 }
 
 // ── Session : cookies d'abord (fiable), content script en secours ─────────────
@@ -371,12 +410,21 @@ async function runPhase1() {
     await sleep(settings.delayMs || 1000);
   }
 
+  // Auto-confirmation des mises en vente (comme SIH) si les secrets sont fournis
+  let confirmed = 0, confirmNote = '';
+  if (listed > 0 && running !== null) {
+    try {
+      const r = await confirmMarket(session.steamid, null);
+      if (r.skipped === 'no-secrets') confirmNote = ' — à CONFIRMER dans l\'app Steam Mobile (ou renseigne tes secrets dans Réglages pour auto-confirmer)';
+      else { confirmed = r.confirmed; confirmNote = ` · ${confirmed} confirmées auto`; }
+    } catch (e) { confirmNote = ' — confirmation auto échouée : ' + e.message; }
+  }
+
   running = false; currentPhase = null;
-  const report = { phase: 'Ventes', ok: listed, skipped, fail: errors.length, firstError: errors[0]?.msg || null, ts: Date.now() };
+  const report = { phase: 'Ventes', ok: listed, confirmed, skipped, fail: errors.length, firstError: errors[0]?.msg || null, ts: Date.now() };
   await setReport(report);
-  notify('phase1_done', 'Ventes (instant sell)',
-    `${listed} listées au meilleur ordre d'achat — CONFIRME-LES dans l'app Steam Mobile. ${skipped} sans acheteur, ${errors.length} erreurs.`);
-  return { ok: true, listed, skipped, errors: errors.length };
+  notify('phase1_done', 'Ventes (instant sell)', `${listed} listées${confirmNote}. ${skipped} sans acheteur, ${errors.length} erreurs.`);
+  return { ok: true, listed, confirmed, skipped, errors: errors.length };
 }
 
 // ── PHASE 2 : Acheter (instant) + Crafter ─────────────────────────────────────
@@ -393,15 +441,10 @@ async function runPhase2() {
   let craftQueue = await getQueue('craft');
   if (!craftQueue) { craftQueue = expandCraftQueue(plan.selected); await setQueue('craft', craftQueue); }
 
-  // Billing COMPLET exigé uniquement s'il y a des achats à faire
+  const hasSecrets = !!(await getSecretsOrNull());
   const needBuy = buyQueue.some(i => !i.done);
-  let billing = null;
-  if (needBuy) {
-    billing = await getBilling();
-    if (!isBillingComplete(billing)) {
-      await setBilling(null); // purge une capture partielle inutilisable
-      throw new Error('Infos de facturation incomplètes. Sur une page du marché Steam, clique « Placer un ordre d\'achat » (sans valider) : l\'adresse pré-remplie sera capturée. Les crafts gratuits, eux, passeront sans.');
-    }
+  if (needBuy && !hasSecrets) {
+    throw new Error('Achats impossibles sans auto-confirmation : Steam exige une confirmation mobile pour chaque ordre. Renseigne identity_secret + device_id dans Réglages → Confirmation automatique. (Les crafts gratuits, eux, passent sans.)');
   }
 
   running = true; paused = false; currentPhase = 'phase2';
@@ -410,7 +453,7 @@ async function runPhase2() {
   let bought = 0, crafted = 0;
   const errors = [];
 
-  // Achats : ordre au prix vendeur le plus bas → exécution immédiate
+  // Achats : ordre au prix vendeur le plus bas + auto-confirmation Steam Guard
   for (let i = 0; i < buyQueue.length; i++) {
     if (!running) break;
     await waitIfPaused();
@@ -420,34 +463,38 @@ async function runPhase2() {
     progress.lastAction = `Achat ×${item.qty} : ${item.name || item.mhn}`;
 
     try {
-      const res = await createBuyOrder({
-        sessionid: session.sessionid,
-        mhn: item.mhn,
-        priceTotal: item.askPerCard * item.qty,
-        quantity: item.qty,
-        billing,
-      }, pagePost);
+      const buyArgs = { sessionid: session.sessionid, mhn: item.mhn, priceTotal: item.askPerCard * item.qty, quantity: item.qty };
+      let res = await createBuyOrder(buyArgs, pagePost);
+
+      // Flux de confirmation : need_confirmation → on accepte la conf mobile → on rejoue
+      if (res && res.need_confirmation && res.confirmation && res.confirmation.confirmation_id) {
+        const confId = res.confirmation.confirmation_id;
+        progress.lastAction = `Confirmation de l'achat : ${item.name || item.mhn}`;
+        await confirmMarket(session.steamid, new Set([String(confId)]));
+        await sleep(1500);
+        res = await createBuyOrder({ ...buyArgs, confirmation: confId }, pagePost);
+        // Si Steam redemande, retente l'accept une 2e fois
+        if (res && res.need_confirmation) {
+          await confirmMarket(session.steamid, null);
+          await sleep(1500);
+          res = await createBuyOrder({ ...buyArgs, confirmation: confId }, pagePost);
+        }
+      }
+
       if (res && res.success === 1) {
-        item.done = true; item.orderId = res.buy_orderid; bought += item.qty;
-        item.retried = 0;
+        item.done = true; item.orderId = res.buy_orderid; bought += item.qty; item.retried = 0;
       } else if (res && res.success === 84) {
-        // Rate limit achats ("too many purchases") : on patiente puis on retente cet item
         if ((item.retried || 0) < 2) {
           item.retried = (item.retried || 0) + 1;
           progress.lastAction = 'Limite d\'achats Steam — pause 60 s…';
-          await sleep(60000);
-          i--; // retente le même item
+          await sleep(60000); i--;
         } else {
           item.error = 'success=84 — limite d\'achats Steam, réessaie plus tard';
           errors.push({ mhn: item.mhn, msg: item.error });
         }
-      } else if (res && res.success === 22) {
-        // Billing refusé par Steam : inutile d'insister sur les items suivants
-        item.error = 'success=22 — facturation refusée';
+      } else if (res && (res.success === 22 || res.need_confirmation)) {
+        item.error = 'Confirmation non aboutie (success=22). Vérifie identity_secret/device_id dans Réglages.';
         errors.push({ mhn: item.mhn, msg: item.error });
-        await setBilling(null); // force une nouvelle capture propre
-        progress.lastAction = 'Facturation refusée par Steam — recapture nécessaire, achats interrompus';
-        break;
       } else {
         item.error = `success=${res && res.success}${res && res.message ? ' — ' + res.message : ''}`;
         errors.push({ mhn: item.mhn, msg: item.error });

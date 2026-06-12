@@ -37,7 +37,7 @@ let activeFilter = 'all';
 
 async function init() {
   loadSettings();
-  loadBilling();
+  loadSecrets();
   bindEvents();
   await refreshStatus();
   startPolling();
@@ -65,14 +65,9 @@ async function refreshStatus() {
     sl.textContent = 'Non connecté';
   }
 
-  // Billing alert
+  // Alerte auto-confirmation
   const ba = $('billing-alert');
-  if (ba) ba.classList.toggle('hidden', status.hasBilling !== false);
-
-  // Garde le formulaire en phase avec l'adresse stockée (ex. capturée depuis Steam),
-  // sauf si l'utilisateur est en train d'éditer un champ
-  const editing = /^bill-/.test(document.activeElement && document.activeElement.id || '');
-  if (!editing) loadBilling();
+  if (ba) ba.classList.toggle('hidden', status.hasSecrets !== false);
 
   // Plan
   if (status.plan) {
@@ -87,6 +82,7 @@ async function refreshStatus() {
     const r = status.report;
     const when = new Date(r.ts).toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' });
     let html = `<b>${r.phase}</b> (${when}) — <span class="rep-ok">${r.ok} ok</span>`;
+    if (r.confirmed) html += ` · ${r.confirmed} confirmées`;
     if (r.bought)   html += ` · ${r.bought} achetées`;
     if (r.skipped)  html += ` · ${r.skipped} sans acheteur`;
     if (r.fail)     html += ` · <span class="rep-fail">${r.fail} erreur(s)</span>`;
@@ -300,80 +296,62 @@ function bindEvents() {
   });
 
   $('btn-save-settings').addEventListener('click', saveSettings);
-  $('btn-save-billing').addEventListener('click', () => saveBilling(true));
+  $('btn-test-confirm').addEventListener('click', testConfirm);
 
-  // Sauvegarde automatique de la facturation dès qu'on tape (débounce 500 ms)
-  let billTimer = null;
-  for (const id of ['bill-first', 'bill-last', 'bill-address', 'bill-city', 'bill-postal', 'bill-country']) {
+  // Sauvegarde automatique des secrets dès qu'on tape (débounce 500 ms)
+  let secTimer = null;
+  for (const id of ['sec-identity', 'sec-device']) {
     const el = $(id);
     if (el) el.addEventListener('input', () => {
-      clearTimeout(billTimer);
-      billTimer = setTimeout(() => saveBilling(false), 500);
+      clearTimeout(secTimer);
+      secTimer = setTimeout(saveSecrets, 500);
     });
   }
 }
 
-// ── Facturation (saisie unique, stockée localement) ────────────────────────────
+// ── Secrets de l'authentificateur (auto-confirmation) ──────────────────────────
 
-async function loadBilling() {
-  const b = await new Promise(r => chrome.storage.local.get('billing', d => r(d.billing || null)));
-  if (b) {
-    $('bill-first').value   = b.first_name || '';
-    $('bill-last').value    = b.last_name || '';
-    $('bill-address').value = b.billing_address || '';
-    $('bill-city').value    = b.billing_city || '';
-    $('bill-postal').value  = b.billing_po || b.billing_postal_code || '';
-    $('bill-country').value = b.billing_country || '';
+async function loadSecrets() {
+  const s = await new Promise(r => chrome.storage.local.get('authsecrets', d => r(d.authsecrets || null)));
+  if (s) {
+    $('sec-identity').value = s.identitySecret || '';
+    $('sec-device').value   = s.deviceId || '';
   }
-  refreshBillingState(b);
+  refreshSecretsState(s);
 }
 
-function billingComplete(b) {
-  // Pays optionnel (défaut FR appliqué à l'achat)
-  return !!(b && b.first_name && b.last_name && b.billing_address && b.billing_city
-    && (b.billing_po || b.billing_postal_code));
+function secretsComplete(s) {
+  return !!(s && s.identitySecret && s.deviceId);
 }
 
-function refreshBillingState(b) {
-  const el = $('billing-state');
+function refreshSecretsState(s) {
+  const el = $('secrets-state');
   if (!el) return;
-  if (billingComplete(b)) { el.textContent = '· complète ✓'; el.className = 'billing-state ok'; }
+  if (secretsComplete(s)) { el.textContent = '· configurée ✓'; el.className = 'billing-state ok'; }
   else { el.textContent = '· à renseigner'; el.className = 'billing-state miss'; }
 }
 
-async function saveBilling(showToast) {
-  const pc = $('bill-postal').value.trim();
-  const billing = {
-    first_name:       $('bill-first').value.trim(),
-    last_name:        $('bill-last').value.trim(),
-    billing_address:  $('bill-address').value.trim(),
-    billing_address_two: '',
-    billing_city:     $('bill-city').value.trim(),
-    billing_state:    '',
-    billing_country:  ($('bill-country').value.trim() || 'FR').toUpperCase(),
-    billing_po:       pc,
-    billing_postal_code: pc,
-    save_my_address:  '0',
-    tradefee_tax:     '0',
+async function saveSecrets() {
+  const s = {
+    identitySecret: $('sec-identity').value.trim(),
+    deviceId:       $('sec-device').value.trim(),
   };
-  await new Promise(r => chrome.storage.local.set({ billing }, r));
-  refreshBillingState(billing);
-  if (showToast) {
-    const el = $('billing-saved');
-    el.textContent = billingComplete(billing) ? 'Enregistré ✓' : 'Manque : ' + missingBillingFields(billing).join(', ');
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 3500);
-  }
+  await new Promise(r => chrome.storage.local.set({ authsecrets: s }, r));
+  refreshSecretsState(s);
 }
 
-function missingBillingFields(b) {
-  const out = [];
-  if (!b.first_name)      out.push('prénom');
-  if (!b.last_name)       out.push('nom');
-  if (!b.billing_address) out.push('adresse');
-  if (!b.billing_city)    out.push('ville');
-  if (!(b.billing_po || b.billing_postal_code)) out.push('code postal');
-  return out;
+async function testConfirm() {
+  const el = $('secrets-saved');
+  el.textContent = 'Test en cours…';
+  el.classList.remove('hidden');
+  try {
+    const r = await sendMsg('TEST_CONFIRM');
+    if (r.error) throw new Error(r.error);
+    el.textContent = `Connecté ✓ — ${r.count} confirmation(s) en attente`;
+  } catch (e) {
+    el.textContent = '✗ ' + e.message;
+  }
+  setTimeout(() => el.classList.add('hidden'), 5000);
 }
 
 // ── Persistance des réglages ───────────────────────────────────────────────
