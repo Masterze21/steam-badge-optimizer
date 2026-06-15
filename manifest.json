@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Steam Badge Optimizer",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Automatise l'optimisation des badges Steam : vente, achat, craft et gems.",
   "permissions": ["storage", "alarms", "notifications", "scripting", "tabs", "cookies"],
   "host_permissions": [

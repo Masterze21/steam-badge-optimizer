@@ -84,6 +84,7 @@ async function refreshStatus() {
     let html = `<b>${r.phase}</b> (${when}) — <span class="rep-ok">${r.ok} ok</span>`;
     if (r.confirmed) html += ` · ${r.confirmed} confirmées`;
     if (r.bought)   html += ` · ${r.bought} achetées`;
+    if (r.pendingConfirm) html += ` · <span class="rep-pending">${r.pendingConfirm} à confirmer (app mobile)</span>`;
     if (r.skipped)  html += ` · ${r.skipped} sans acheteur`;
     if (r.fail)     html += ` · <span class="rep-fail">${r.fail} erreur(s)</span>`;
     if (r.firstError) html += `<br>↳ ${String(r.firstError).slice(0, 90)}`;

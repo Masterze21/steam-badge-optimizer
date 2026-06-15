@@ -442,18 +442,17 @@ async function runPhase2() {
   if (!craftQueue) { craftQueue = expandCraftQueue(plan.selected); await setQueue('craft', craftQueue); }
 
   const hasSecrets = !!(await getSecretsOrNull());
-  const needBuy = buyQueue.some(i => !i.done);
-  if (needBuy && !hasSecrets) {
-    throw new Error('Achats impossibles sans auto-confirmation : Steam exige une confirmation mobile pour chaque ordre. Renseigne identity_secret + device_id dans Réglages → Confirmation automatique. (Les crafts gratuits, eux, passent sans.)');
-  }
 
   running = true; paused = false; currentPhase = 'phase2';
   progress = { done: 0, total: buyQueue.length + craftQueue.length, lastAction: 'Démarrage…' };
 
-  let bought = 0, crafted = 0;
+  let bought = 0, crafted = 0, pendingConfirm = 0;
   const errors = [];
 
-  // Achats : ordre au prix vendeur le plus bas + auto-confirmation Steam Guard
+  // Achats : ordre d'achat au prix vendeur le plus bas (X-Requested-With via tabFetch).
+  // Steam crée alors une confirmation en attente :
+  //   - secrets fournis → on l'accepte automatiquement et on finalise
+  //   - sinon → l'ordre reste « à confirmer » dans l'app Steam Mobile (manuel)
   for (let i = 0; i < buyQueue.length; i++) {
     if (!running) break;
     await waitIfPaused();
@@ -466,14 +465,13 @@ async function runPhase2() {
       const buyArgs = { sessionid: session.sessionid, mhn: item.mhn, priceTotal: item.askPerCard * item.qty, quantity: item.qty };
       let res = await createBuyOrder(buyArgs, pagePost);
 
-      // Flux de confirmation : need_confirmation → on accepte la conf mobile → on rejoue
-      if (res && res.need_confirmation && res.confirmation && res.confirmation.confirmation_id) {
+      // Auto-confirmation si secrets disponibles
+      if (hasSecrets && res && res.need_confirmation && res.confirmation && res.confirmation.confirmation_id) {
         const confId = res.confirmation.confirmation_id;
-        progress.lastAction = `Confirmation de l'achat : ${item.name || item.mhn}`;
+        progress.lastAction = `Confirmation auto : ${item.name || item.mhn}`;
         await confirmMarket(session.steamid, new Set([String(confId)]));
         await sleep(1500);
         res = await createBuyOrder({ ...buyArgs, confirmation: confId }, pagePost);
-        // Si Steam redemande, retente l'accept une 2e fois
         if (res && res.need_confirmation) {
           await confirmMarket(session.steamid, null);
           await sleep(1500);
@@ -483,6 +481,11 @@ async function runPhase2() {
 
       if (res && res.success === 1) {
         item.done = true; item.orderId = res.buy_orderid; bought += item.qty; item.retried = 0;
+        progress.lastAction = `Ordre placé : ${item.name || item.mhn}`;
+      } else if (res && res.need_confirmation) {
+        // Ordre créé, en attente de confirmation MANUELLE dans l'app Steam Mobile
+        item.done = true; item.pendingConfirm = true; pendingConfirm += item.qty;
+        progress.lastAction = `À confirmer sur Steam Mobile : ${item.name || item.mhn}`;
       } else if (res && res.success === 84) {
         if ((item.retried || 0) < 2) {
           item.retried = (item.retried || 0) + 1;
@@ -492,9 +495,6 @@ async function runPhase2() {
           item.error = 'success=84 — limite d\'achats Steam, réessaie plus tard';
           errors.push({ mhn: item.mhn, msg: item.error });
         }
-      } else if (res && (res.success === 22 || res.need_confirmation)) {
-        item.error = 'Confirmation non aboutie (success=22). Vérifie identity_secret/device_id dans Réglages.';
-        errors.push({ mhn: item.mhn, msg: item.error });
       } else {
         item.error = `success=${res && res.success}${res && res.message ? ' — ' + res.message : ''}`;
         errors.push({ mhn: item.mhn, msg: item.error });
@@ -510,7 +510,9 @@ async function runPhase2() {
     await sleep(settings.delayMs || 1000);
   }
 
-  // Laisse aux achats le temps d'arriver à l'inventaire avant de crafter
+  // Laisse aux achats CONFIRMÉS le temps d'arriver à l'inventaire avant de crafter.
+  // (Les achats en attente de confirmation manuelle ne sont pas encore livrés → leurs
+  //  badges seront sautés ici, à re-crafter après confirmation sur Steam Mobile.)
   if (bought > 0 && running) { progress.lastAction = 'Attente livraison des cartes…'; await sleep(6000); }
 
   // Crafts
@@ -545,10 +547,18 @@ async function runPhase2() {
   }
 
   running = false; currentPhase = null;
-  const report = { phase: 'Achat & craft', ok: crafted, bought, fail: errors.length, firstError: errors[0]?.msg || null, ts: Date.now() };
+  const report = {
+    phase: 'Achat & craft', ok: crafted, bought, pendingConfirm,
+    fail: errors.length, firstError: errors[0]?.msg || null, ts: Date.now(),
+  };
   await setReport(report);
-  notify('phase2_done', 'Achat & craft terminés', `${bought} cartes achetées · ${crafted} badges craftés (+${crafted * 100} XP) · ${errors.length} erreurs`);
-  return { ok: true, bought, crafted, errors: errors.length };
+
+  const pendNote = pendingConfirm > 0
+    ? ` ⚠ ${pendingConfirm} ordre(s) À CONFIRMER dans l'app Steam Mobile, puis relance « Compléter & Crafter » pour ces badges.`
+    : '';
+  notify('phase2_done', 'Achat & craft',
+    `${bought} achetées · ${crafted} badges craftés (+${crafted * 100} XP) · ${errors.length} erreurs.${pendNote}`);
+  return { ok: true, bought, crafted, pendingConfirm, errors: errors.length };
 }
 
 // ── GEMS : broyage intelligent ────────────────────────────────────────────────

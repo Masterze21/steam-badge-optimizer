@@ -423,6 +423,7 @@ header {
 }
 .report-line .rep-ok   { color: var(--c-green, #6c9a3f); font-weight: 700; }
 .report-line .rep-fail { color: var(--c-red, #bf3535); font-weight: 700; }
+.report-line .rep-pending { color: #e0a33a; font-weight: 700; }
 
 .strategy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .strat-opt input { display: none; }
